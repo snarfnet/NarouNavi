@@ -1,0 +1,44 @@
+name: NarouNavi
+options:
+  bundleIdPrefix: com.amasaki
+  deploymentTarget:
+    iOS: "18.0"
+settings:
+  base:
+    SWIFT_VERSION: "5.9"
+    TARGETED_DEVICE_FAMILY: "1"
+    MARKETING_VERSION: "1.0"
+    CURRENT_PROJECT_VERSION: "1"
+    DEVELOPMENT_TEAM: 83VGKGSQUH
+    CODE_SIGN_STYLE: Automatic
+packages:
+  GoogleMobileAds:
+    url: https://github.com/googleads/swift-package-manager-google-mobile-ads
+    from: "11.0.0"
+targets:
+  NarouNavi:
+    type: application
+    platform: iOS
+    sources:
+      - path: NarouNavi
+    info:
+      path: NarouNavi/Info.plist
+      properties:
+        CFBundleDisplayName: なろうNAVI
+        CFBundleIconName: AppIcon
+        CFBundleShortVersionString: "1.0"
+        CFBundleVersion: "1"
+        LSRequiresIPhoneOS: true
+        UIDeviceFamily:
+          - 1
+        UILaunchScreen: {}
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+        UIApplicationSceneManifest:
+          UIApplicationSupportsMultipleScenes: false
+        GADApplicationIdentifier: ca-app-pub-9404799280370656~4473000616
+    settings:
+      base:
+        TARGETED_DEVICE_FAMILY: "1"
+    dependencies:
+      - package: GoogleMobileAds
