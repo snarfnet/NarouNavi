@@ -93,12 +93,23 @@ for state_filter in ['UNRESOLVED_ISSUES', 'READY_FOR_REVIEW']:
             canceled_any = True
 
 if canceled_any:
-    print('Waiting 10s for cancellations to propagate...')
-    time.sleep(10)
+    print('Waiting 30s for cancellations to propagate...')
+    time.sleep(30)
+    # Re-fetch version state after cancellation
+    r = api('GET', f'/apps/{APP_ID}/appStoreVersions?filter[platform]=IOS&limit=1')
+    data = r.json()
+    if data.get('data'):
+        version_id = data['data'][0]['id']
+        version_state = data['data'][0]['attributes']['appStoreState']
+        print(f'Version after cancel: {version_id} state={version_state}')
+    # Re-assign build after cancel
+    r = api('PATCH', f'/appStoreVersions/{version_id}/relationships/build',
+        json={'data': {'type': 'builds', 'id': build_id}})
+    print(f'Build re-assigned: {r.status_code}')
 
 # Submit via reviewSubmissions API (with retry)
 submission_id = None
-for attempt in range(3):
+for attempt in range(5):
     r = api('POST', '/reviewSubmissions', json={
         'data': {
             'type': 'reviewSubmissions',
@@ -109,24 +120,36 @@ for attempt in range(3):
         submission_id = r.json()['data']['id']
         print(f'ReviewSubmission created: {submission_id}')
         break
-    print(f'Create reviewSubmission attempt {attempt+1}/3 failed: {r.status_code} {r.text[:200]}')
-    if attempt < 2:
-        time.sleep(10)
+    print(f'Create reviewSubmission attempt {attempt+1}/5 failed: {r.status_code} {r.text[:200]}')
+    if attempt < 4:
+        time.sleep(15)
 
 if not submission_id:
-    print('Could not create reviewSubmission after 3 attempts.')
+    print('Could not create reviewSubmission after 5 attempts.')
     sys.exit(0)
 
-r = api('POST', '/reviewSubmissionItems', json={
-    'data': {
-        'type': 'reviewSubmissionItems',
-        'relationships': {
-            'reviewSubmission': {'data': {'type': 'reviewSubmissions', 'id': submission_id}},
-            'appStoreVersion': {'data': {'type': 'appStoreVersions', 'id': version_id}}
+# Add item with retry
+item_added = False
+for attempt in range(5):
+    r = api('POST', '/reviewSubmissionItems', json={
+        'data': {
+            'type': 'reviewSubmissionItems',
+            'relationships': {
+                'reviewSubmission': {'data': {'type': 'reviewSubmissions', 'id': submission_id}},
+                'appStoreVersion': {'data': {'type': 'appStoreVersions', 'id': version_id}}
+            }
         }
-    }
-})
-print(f'Add item: {r.status_code}')
+    })
+    print(f'Add item attempt {attempt+1}/5: {r.status_code}')
+    if r.status_code == 201:
+        item_added = True
+        break
+    if attempt < 4:
+        time.sleep(15)
+
+if not item_added:
+    print(f'Failed to add item: {r.text[:300]}')
+    sys.exit(0)
 
 r = api('PATCH', f'/reviewSubmissions/{submission_id}', json={
     'data': {
