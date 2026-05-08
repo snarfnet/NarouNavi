@@ -1,9 +1,10 @@
-import jwt, time, requests, sys
+import jwt, time, requests, sys, os, hashlib
 
 KEY_ID = 'WDXGY9WX55'
 ISSUER = '2be0734f-943a-4d61-9dc9-5d9045c46fec'
 APP_ID = '6764072933'
 BUILD_NUMBER = sys.argv[1]
+SCREENSHOT_DIR = os.environ.get('SCREENSHOT_DIR', 'AppStoreScreenshots')
 
 p8 = open('/tmp/asc_key.p8').read()
 
@@ -34,7 +35,7 @@ for i in range(80):
     time.sleep(30)
 
 if not build_id:
-    print('WARNING: Build not found after 40 minutes. Check ASC manually.')
+    print('Build not found after 40 minutes.')
     sys.exit(0)
 
 # Set export compliance
@@ -42,124 +43,212 @@ r = api('PATCH', f'/builds/{build_id}',
     json={'data': {'type': 'builds', 'id': build_id, 'attributes': {'usesNonExemptEncryption': False}}})
 print(f'Export compliance: {r.status_code}')
 
-# Find version - check all states
-version_id = None
-version_state = None
-r = api('GET', f'/apps/{APP_ID}/appStoreVersions?filter[platform]=IOS&limit=1')
-data = r.json()
-if data.get('data'):
-    version_id = data['data'][0]['id']
-    version_state = data['data'][0]['attributes']['appStoreState']
-    print(f'Found version: {version_id} state={version_state}')
+# Cancel any blocking reviewSubmissions
+canceled = False
+for state in ['UNRESOLVED_ISSUES', 'READY_FOR_REVIEW', 'WAITING_FOR_REVIEW']:
+    r = api('GET', f'/apps/{APP_ID}/reviewSubmissions?filter[state]={state}')
+    for sub in r.json().get('data', []):
+        sid = sub['id']
+        api('PATCH', f'/reviewSubmissions/{sid}', json={
+            'data': {'type': 'reviewSubmissions', 'id': sid, 'attributes': {'canceled': True}}
+        })
+        print(f'Canceled {sid}')
+        canceled = True
+if canceled:
+    time.sleep(30)
 
-if version_state in ('WAITING_FOR_REVIEW', 'IN_REVIEW'):
-    print(f'Already in review ({version_state}). Nothing to do.')
-    sys.exit(0)
-
-if not version_id or version_state in ('READY_FOR_DISTRIBUTION',):
-    print('Creating new version...')
+# Find version
+r = api('GET', f'/apps/{APP_ID}/appStoreVersions?filter[platform]=IOS&filter[appStoreState]=PREPARE_FOR_SUBMISSION,REJECTED,DEVELOPER_REJECTED&limit=1')
+versions = r.json().get('data', [])
+if versions:
+    version_id = versions[0]['id']
+    version_state = versions[0]['attributes']['appStoreState']
+    print(f'Using version: {version_id} ({version_state})')
+else:
+    r = api('GET', f'/apps/{APP_ID}/appStoreVersions?filter[platform]=IOS&limit=1')
+    data = r.json()
+    if data.get('data'):
+        vs = data['data'][0]['attributes']['appStoreState']
+        if vs in ('WAITING_FOR_REVIEW', 'IN_REVIEW'):
+            print(f'Already in review ({vs}). Nothing to do.')
+            sys.exit(0)
     r = api('POST', '/appStoreVersions', json={
         'data': {
             'type': 'appStoreVersions',
-            'attributes': {'platform': 'IOS', 'versionString': '1.0'},
+            'attributes': {'platform': 'IOS', 'versionString': '1.1'},
             'relationships': {'app': {'data': {'type': 'apps', 'id': APP_ID}}}
         }
     })
     if r.status_code not in (200, 201):
-        print(f'Failed to create version: {r.text[:300]}')
+        print(f'Create version failed: {r.text[:500]}')
         sys.exit(1)
     version_id = r.json()['data']['id']
-    version_state = 'PREPARE_FOR_SUBMISSION'
-
-print(f'Version ID: {version_id} state={version_state}')
+    print(f'Created version: {version_id}')
 
 # Assign build
 r = api('PATCH', f'/appStoreVersions/{version_id}/relationships/build',
     json={'data': {'type': 'builds', 'id': build_id}})
 print(f'Build assigned: {r.status_code}')
 
-# Cancel any blocking reviewSubmissions
-canceled_any = False
-for state_filter in ['UNRESOLVED_ISSUES', 'READY_FOR_REVIEW']:
-    r = api('GET', f'/apps/{APP_ID}/reviewSubmissions?filter[state]={state_filter}')
-    if r.status_code == 200:
-        for sub in r.json().get('data', []):
-            sid = sub['id']
-            st = sub['attributes']['state']
-            cr = api('PATCH', f'/reviewSubmissions/{sid}', json={
-                'data': {'type': 'reviewSubmissions', 'id': sid, 'attributes': {'canceled': True}}
-            })
-            print(f'Cancel {sid} state={st}: {cr.status_code}')
-            canceled_any = True
-
-if canceled_any:
-    print('Waiting 30s for cancellations to propagate...')
-    time.sleep(30)
-    # Re-fetch version state after cancellation
-    r = api('GET', f'/apps/{APP_ID}/appStoreVersions?filter[platform]=IOS&limit=1')
-    data = r.json()
-    if data.get('data'):
-        version_id = data['data'][0]['id']
-        version_state = data['data'][0]['attributes']['appStoreState']
-        print(f'Version after cancel: {version_id} state={version_state}')
-    # Re-assign build after cancel
-    r = api('PATCH', f'/appStoreVersions/{version_id}/relationships/build',
-        json={'data': {'type': 'builds', 'id': build_id}})
-    print(f'Build re-assigned: {r.status_code}')
-
-# Submit via reviewSubmissions API (with retry)
-submission_id = None
-for attempt in range(5):
-    r = api('POST', '/reviewSubmissions', json={
+# Update whatsNew
+r = api('GET', f'/appStoreVersions/{version_id}/appStoreVersionLocalizations')
+locs = r.json().get('data', [])
+for loc in locs:
+    loc_id = loc['id']
+    api('PATCH', f'/appStoreVersionLocalizations/{loc_id}', json={
         'data': {
-            'type': 'reviewSubmissions',
-            'relationships': {'app': {'data': {'type': 'apps', 'id': APP_ID}}}
+            'type': 'appStoreVersionLocalizations', 'id': loc_id,
+            'attributes': {'whatsNew': 'UIの改善とパフォーマンス向上'}
         }
     })
-    if r.status_code == 201:
-        submission_id = r.json()['data']['id']
-        print(f'ReviewSubmission created: {submission_id}')
+
+# ── Clean up old screenshots ──
+print('Cleaning up old screenshots...')
+for loc in locs:
+    loc_id = loc['id']
+    r = api('GET', f'/appStoreVersionLocalizations/{loc_id}/appScreenshotSets')
+    for ss_set in r.json().get('data', []):
+        set_id = ss_set['id']
+        r2 = api('GET', f'/appScreenshotSets/{set_id}/appScreenshots')
+        for ss in r2.json().get('data', []):
+            api('DELETE', f'/appScreenshots/{ss["id"]}')
+        api('DELETE', f'/appScreenshotSets/{set_id}')
+time.sleep(10)
+
+# ── Upload fresh screenshots ──
+DISPLAY_TYPES = {
+    '': 'APP_IPHONE_67',
+    'iphone_65': 'APP_IPHONE_65',
+    'ipad_129': 'APP_IPAD_PRO_3GEN_129',
+}
+
+for subdir, display_type in DISPLAY_TYPES.items():
+    ss_path = os.path.join(SCREENSHOT_DIR, subdir) if subdir else SCREENSHOT_DIR
+    if not os.path.isdir(ss_path):
+        continue
+    pngs = sorted([f for f in os.listdir(ss_path) if f.endswith('.png')])
+    if not pngs:
+        continue
+    print(f'\nUploading {len(pngs)} for {display_type}')
+
+    for loc in locs:
+        loc_id = loc['id']
+        locale = loc['attributes']['locale']
+
+        r = api('POST', '/appScreenshotSets', json={
+            'data': {
+                'type': 'appScreenshotSets',
+                'attributes': {'screenshotDisplayType': display_type},
+                'relationships': {'appStoreVersionLocalization': {'data': {'type': 'appStoreVersionLocalizations', 'id': loc_id}}}
+            }
+        })
+        if r.status_code != 201:
+            print(f'  Create set failed ({locale}): {r.status_code} {r.text[:200]}')
+            continue
+        set_id = r.json()['data']['id']
+
+        for png in pngs:
+            filepath = os.path.join(ss_path, png)
+            filesize = os.path.getsize(filepath)
+            with open(filepath, 'rb') as f:
+                checksum = hashlib.md5(f.read()).hexdigest()
+
+            r = api('POST', '/appScreenshots', json={
+                'data': {
+                    'type': 'appScreenshots',
+                    'attributes': {'fileName': png, 'fileSize': filesize},
+                    'relationships': {'appScreenshotSet': {'data': {'type': 'appScreenshotSets', 'id': set_id}}}
+                }
+            })
+            if r.status_code != 201:
+                print(f'  Reserve {png} failed: {r.status_code} {r.text[:200]}')
+                continue
+
+            ss_data = r.json()['data']
+            ss_id = ss_data['id']
+            upload_ops = ss_data['attributes'].get('uploadOperations', [])
+
+            with open(filepath, 'rb') as f:
+                file_data = f.read()
+            for op in upload_ops:
+                hdrs = {h['name']: h['value'] for h in op['requestHeaders']}
+                requests.put(op['url'], headers=hdrs, data=file_data[op['offset']:op['offset']+op['length']])
+
+            api('PATCH', f'/appScreenshots/{ss_id}', json={
+                'data': {'type': 'appScreenshots', 'id': ss_id, 'attributes': {'uploaded': True, 'sourceFileChecksum': checksum}}
+            })
+            print(f'  {png} -> {locale}')
+
+# ── Wait for screenshot processing ──
+print('\nWaiting for screenshots to process...')
+for wait in range(20):
+    processing = False
+    for loc in locs:
+        r2 = api('GET', f'/appStoreVersionLocalizations/{loc["id"]}/appScreenshotSets')
+        for ss_set in r2.json().get('data', []):
+            r3 = api('GET', f'/appScreenshotSets/{ss_set["id"]}/appScreenshots')
+            for ss in r3.json().get('data', []):
+                state = ss['attributes'].get('assetDeliveryState', {}).get('state', '')
+                if state not in ('COMPLETE', 'UPLOAD_COMPLETE'):
+                    processing = True
+    if not processing:
+        print('Screenshots ready!')
         break
-    print(f'Create reviewSubmission attempt {attempt+1}/5 failed: {r.status_code} {r.text[:200]}')
-    if attempt < 4:
+    print(f'  Processing... ({wait+1}/20)')
+    time.sleep(30)
+
+# ── Submit ──
+submission_id = None
+
+# Try reusing existing READY_FOR_REVIEW submission
+r = api('GET', f'/apps/{APP_ID}/reviewSubmissions?filter[state]=READY_FOR_REVIEW&limit=10')
+for sub in r.json().get('data', []):
+    sid = sub['id']
+    r2 = api('GET', f'/reviewSubmissions/{sid}/items')
+    items = r2.json().get('data', [])
+    if not items:
+        submission_id = sid
+        print(f'Reusing submission: {submission_id}')
+        break
+
+if not submission_id:
+    for attempt in range(5):
+        r = api('POST', '/reviewSubmissions', json={
+            'data': {
+                'type': 'reviewSubmissions',
+                'relationships': {'app': {'data': {'type': 'apps', 'id': APP_ID}}}
+            }
+        })
+        if r.status_code == 201:
+            submission_id = r.json()['data']['id']
+            print(f'Created submission: {submission_id}')
+            break
+        print(f'Create attempt {attempt+1}/5: {r.status_code} {r.text[:300]}')
         time.sleep(15)
 
 if not submission_id:
-    print('Could not create reviewSubmission after 5 attempts.')
-    sys.exit(0)
+    print('Could not create review submission')
+    sys.exit(1)
 
-# Add item with retry
-item_added = False
-for attempt in range(5):
-    r = api('POST', '/reviewSubmissionItems', json={
-        'data': {
-            'type': 'reviewSubmissionItems',
-            'relationships': {
-                'reviewSubmission': {'data': {'type': 'reviewSubmissions', 'id': submission_id}},
-                'appStoreVersion': {'data': {'type': 'appStoreVersions', 'id': version_id}}
-            }
-        }
-    })
-    print(f'Add item attempt {attempt+1}/5: {r.status_code}')
-    if r.status_code == 201:
-        item_added = True
-        break
-    if attempt < 4:
-        time.sleep(15)
-
-if not item_added:
-    print(f'Failed to add item: {r.text[:300]}')
-    sys.exit(0)
-
-r = api('PATCH', f'/reviewSubmissions/{submission_id}', json={
+r = api('POST', '/reviewSubmissionItems', json={
     'data': {
-        'type': 'reviewSubmissions',
-        'id': submission_id,
-        'attributes': {'submitted': True}
+        'type': 'reviewSubmissionItems',
+        'relationships': {
+            'reviewSubmission': {'data': {'type': 'reviewSubmissions', 'id': submission_id}},
+            'appStoreVersion': {'data': {'type': 'appStoreVersions', 'id': version_id}}
+        }
     }
 })
+print(f'Add item: {r.status_code}')
+if r.status_code != 201:
+    print(f'  {r.text[:1000]}')
+    sys.exit(1)
+
+r = api('PATCH', f'/reviewSubmissions/{submission_id}', json={
+    'data': {'type': 'reviewSubmissions', 'id': submission_id, 'attributes': {'submitted': True}}
+})
 if r.status_code == 200:
-    state = r.json()['data']['attributes']['state']
-    print(f'Submitted! State: {state}')
+    print(f'Submitted! State: {r.json()["data"]["attributes"]["state"]}')
 else:
-    print(f'Submit failed: {r.status_code} {r.text[:300]}')
+    print(f'Submit failed: {r.status_code} {r.text[:1000]}')
+    sys.exit(1)
