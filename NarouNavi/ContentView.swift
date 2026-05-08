@@ -10,6 +10,7 @@ struct ContentView: View {
             FavoritesView()
                 .tabItem { Label("お気に入り", systemImage: "star.fill") }
         }
-        .tint(.purple)
+        .tint(AppTheme.gold)
+        .preferredColorScheme(.dark)
     }
 }

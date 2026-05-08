@@ -8,7 +8,7 @@ settings:
     SWIFT_VERSION: "5.9"
     TARGETED_DEVICE_FAMILY: "1"
     MARKETING_VERSION: "1.0"
-    CURRENT_PROJECT_VERSION: "1"
+    CURRENT_PROJECT_VERSION: "2"
     DEVELOPMENT_TEAM: 83VGKGSQUH
     CODE_SIGN_STYLE: Automatic
 packages:
@@ -37,7 +37,7 @@ targets:
         UIApplicationSceneManifest:
           UIApplicationSupportsMultipleScenes: false
         GADApplicationIdentifier: ca-app-pub-9404799280370656~4473000616
-        NSUserTrackingUsageDescription: "パーソナライズ広告のためにトラッキングデータを使用します。"
+        NSUserTrackingUsageDescription: "広告の表示品質を改善するために使用します。"
         NSAppTransportSecurity:
           NSAllowsArbitraryLoads: true
         SKAdNetworkItems:
